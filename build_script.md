@@ -15,7 +15,7 @@ Paste this:
 ```
 #!/bin/bash
 
-# Prevent nesting tmux sessions
+# Don't run inside tmux
 if [ -n "$TMUX" ]; then
   return
 fi
@@ -23,40 +23,46 @@ fi
 LOG_DIR="$HOME/logs"
 mkdir -p "$LOG_DIR"
 
-SESSION_NAME="auto_session"
+SESSION_NAME="auto_$(date +%s)"
 
-# If session already exists, attach
-tmux has-session -t $SESSION_NAME 2>/dev/null
-if [ $? -eq 0 ]; then
-  exec tmux attach -t $SESSION_NAME
-fi
+# Create a new tmux session
+tmux new-session -d -s "$SESSION_NAME"
 
-# Create new session detached
-tmux new-session -d -s $SESSION_NAME
+# Create 3 panes (even layout)
+tmux split-window -h -t "$SESSION_NAME"
+tmux split-window -v -t "$SESSION_NAME:0.0"
+tmux select-layout -t "$SESSION_NAME" tiled
 
-# Split into 3 panes
-tmux split-window -h -t $SESSION_NAME
-tmux split-window -v -t $SESSION_NAME:0.0
+# Function to configure pane
+configure_pane() {
+  local pane=$1
 
-# Function to setup each pane
-setup_pane() {
-  PANE_ID=$1
-  tmux send-keys -t $PANE_ID '
-read -p "Enter name for this pane: " PANE_NAME
-LOG_FILE="$HOME/logs/${PANE_NAME}_$(date +%Y%m%d_%H%M%S).log"
-echo "Logging to $LOG_FILE"
-exec > >(awk '"'"'{ print strftime("[%Y-%m-%d %H:%M:%S]"), $0; fflush(); }'"'"' | tee -a "$LOG_FILE") 2>&1
+  tmux send-keys -t "$pane" "
 clear
-' C-m
+echo '---------------------------------------'
+echo 'Enter name for this pane:'
+read PANE_NAME
+if [ -z \"\$PANE_NAME\" ]; then
+  PANE_NAME=\"pane_\$(tmux display-message -p '#P')\"
+fi
+LOG_FILE=\"$LOG_DIR/\${PANE_NAME}_\$(date +%Y%m%d_%H%M%S).log\"
+echo \"Logging to \$LOG_FILE\"
+echo '---------------------------------------'
+
+exec > >(awk '{ print strftime(\"[%Y-%m-%d %H:%M:%S]\"), \$0; fflush(); }' | tee -a \"\$LOG_FILE\") 2>&1
+" C-m
 }
 
-# Setup each pane
-setup_pane "$SESSION_NAME:0.0"
-setup_pane "$SESSION_NAME:0.1"
-setup_pane "$SESSION_NAME:0.2"
+# Give tmux a moment to initialize
+sleep 0.2
 
-# Attach to session
-exec tmux attach -t $SESSION_NAME
+# Configure each pane
+for pane in $(tmux list-panes -t "$SESSION_NAME" -F "#{pane_id}"); do
+  configure_pane "$pane"
+done
+
+# Attach
+exec tmux attach -t "$SESSION_NAME"
 ```
 
 ### Make it executable:
@@ -113,3 +119,4 @@ Layout Overview
 | Pane 2 |              |
 
  -----------------------
+

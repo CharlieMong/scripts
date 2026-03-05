@@ -1,14 +1,18 @@
 Ubuntu/Debian:
 
+```
 sudo apt install tmux
+```
+
 ✅ Step 2: Create the Setup Script
 
 Create this file:
-
+```
 nano ~/.zsh_tmux_auto.sh
+```
 
 Paste this:
-
+```
 #!/bin/bash
 
 # Prevent nesting tmux sessions
@@ -53,23 +57,27 @@ setup_pane "$SESSION_NAME:0.2"
 
 # Attach to session
 exec tmux attach -t $SESSION_NAME
+```
 
-Make it executable:
-
+### Make it executable:
+```
 chmod +x ~/.zsh_tmux_auto.sh
-✅ Step 3: Make Zsh Run It Automatically
+```
+
+### Step 3: Make Zsh Run It Automatically
 
 Add this to the bottom of your ~/.zshrc:
-
+```
 # Auto-start 3 pane tmux layout
 if command -v tmux >/dev/null 2>&1; then
   source ~/.zsh_tmux_auto.sh
 fi
-
+```
 Reload zsh:
-
+```
 source ~/.zshrc
- What Happens Now
+```
+### What Happens Now
 
 Every time you:
 
@@ -103,4 +111,5 @@ Layout Overview
 |        |              |
 |--------|              |
 | Pane 2 |              |
+
  -----------------------

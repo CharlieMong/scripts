@@ -13,56 +13,39 @@ nano ~/.zsh_tmux_auto.sh
 
 Paste this:
 ```
-#!/bin/bash
+# --- Auto 3-pane tmux setup ---
+if [[ -o interactive ]] && [[ -z "$TMUX" ]] && [[ -z "$ZSH_TMUX_AUTO_STARTED" ]]; then
+  export ZSH_TMUX_AUTO_STARTED=1
 
-# Don't run inside tmux
-if [ -n "$TMUX" ]; then
-  return
-fi
+  LOG_DIR="$HOME/logs"
+  mkdir -p "$LOG_DIR"
 
-LOG_DIR="$HOME/logs"
-mkdir -p "$LOG_DIR"
+  SESSION_NAME="auto_$(date +%s)"
 
-SESSION_NAME="auto_$(date +%s)"
+  tmux new-session -d -s "$SESSION_NAME" zsh
+  tmux split-window -h -t "$SESSION_NAME" zsh
+  tmux split-window -v -t "$SESSION_NAME:0.0" zsh
+  tmux select-layout -t "$SESSION_NAME" tiled
 
-# Create a new tmux session
-tmux new-session -d -s "$SESSION_NAME"
+  sleep 0.2
 
-# Create 3 panes (even layout)
-tmux split-window -h -t "$SESSION_NAME"
-tmux split-window -v -t "$SESSION_NAME:0.0"
-tmux select-layout -t "$SESSION_NAME" tiled
-
-# Function to configure pane
-configure_pane() {
-  local pane=$1
-
-  tmux send-keys -t "$pane" "
+  for pane in $(tmux list-panes -t "$SESSION_NAME" -F "#{pane_id}"); do
+    tmux send-keys -t "$pane" '
 clear
-echo '---------------------------------------'
-echo 'Enter name for this pane:'
-read PANE_NAME
-if [ -z \"\$PANE_NAME\" ]; then
-  PANE_NAME=\"pane_\$(tmux display-message -p '#P')\"
+echo "---------------------------------------"
+read "PANE_NAME?Enter name for this pane: "
+[[ -z "$PANE_NAME" ]] && PANE_NAME="pane_$(tmux display-message -p "#{pane_index}")"
+LOG_FILE="$HOME/logs/${PANE_NAME}_$(date +%Y%m%d_%H%M%S).log"
+echo "Logging to $LOG_FILE"
+echo "---------------------------------------"
+
+exec > >(awk '"'"'{ print strftime("[%Y-%m-%d %H:%M:%S]"), $0; fflush(); }'"'"' | tee -a "$LOG_FILE") 2>&1
+' C-m
+  done
+
+  exec tmux attach -t "$SESSION_NAME"
 fi
-LOG_FILE=\"$LOG_DIR/\${PANE_NAME}_\$(date +%Y%m%d_%H%M%S).log\"
-echo \"Logging to \$LOG_FILE\"
-echo '---------------------------------------'
-
-exec > >(awk '{ print strftime(\"[%Y-%m-%d %H:%M:%S]\"), \$0; fflush(); }' | tee -a \"\$LOG_FILE\") 2>&1
-" C-m
-}
-
-# Give tmux a moment to initialize
-sleep 0.2
-
-# Configure each pane
-for pane in $(tmux list-panes -t "$SESSION_NAME" -F "#{pane_id}"); do
-  configure_pane "$pane"
-done
-
-# Attach
-exec tmux attach -t "$SESSION_NAME"
+# --- End Auto Setup ---
 ```
 
 ### Make it executable:
@@ -119,4 +102,5 @@ Layout Overview
 | Pane 2 |              |
 
  -----------------------
+
 

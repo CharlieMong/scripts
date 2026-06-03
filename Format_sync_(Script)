@@ -1,0 +1,242 @@
+
+``` python
+#!/usr/bin/env python3
+"""
+format_sync.py
+
+Audit and synchronise fonts/formatting in a Word (.docx) document against a
+template document, so the target ends up formatted the same way as the template.
+
+Two layers of formatting are handled:
+  1. STYLES   - named styles (Normal, Heading 1, ...) define font, size, bold,
+                colour, spacing. Most content inherits from these.
+  2. DIRECT   - run-level overrides applied to individual pieces of text
+                (a manually bolded word, a font swap on one run). These sit on
+                top of styles and can mask them.
+
+Usage:
+  Audit only (report differences, change nothing):
+      python format_sync.py --template template.docx --target target.docx --report
+
+  Sync styles from template into target (recommended first step):
+      python format_sync.py --template template.docx --target target.docx \
+             --out fixed.docx --sync-styles
+
+  Also strip direct run formatting in the target so style formatting shows
+  through (use when manual overrides are fighting the styles):
+      python format_sync.py --template template.docx --target target.docx \
+             --out fixed.docx --sync-styles --clear-direct
+
+The original target is never modified in place; output goes to --out.
+"""
+
+import argparse
+import copy
+
+from docx import Document
+from docx.shared import RGBColor
+
+
+# --------------------------------------------------------------------------- #
+# Inspection
+# --------------------------------------------------------------------------- #
+
+def _font_dict(font) -> dict:
+    """Snapshot the inspectable attributes of a python-docx Font object."""
+    color = None
+    try:
+        if font.color and font.color.rgb is not None:
+            color = str(font.color.rgb)
+    except (AttributeError, ValueError):
+        color = None
+    return {
+        "name": font.name,
+        "size": font.size.pt if font.size is not None else None,
+        "bold": font.bold,
+        "italic": font.italic,
+        "underline": font.underline,
+        "color": color,
+    }
+
+
+def collect_styles(doc) -> dict:
+    """Return {style_name: font_dict} for every style that exposes a font."""
+    out = {}
+    for style in doc.styles:
+        font = getattr(style, "font", None)
+        if font is None:
+            continue
+        out[style.name] = _font_dict(font)
+    return out
+
+
+def audit(template, target) -> list[str]:
+    """Compare style font definitions between template and target."""
+    t_styles = collect_styles(template)
+    g_styles = collect_styles(target)
+    lines = []
+
+    for name, t_font in t_styles.items():
+        if name not in g_styles:
+            lines.append(f"[MISSING] style '{name}' exists in template, not in target")
+            continue
+        g_font = g_styles[name]
+        diffs = [
+            f"{attr}: template={t_font[attr]!r} target={g_font[attr]!r}"
+            for attr in t_font
+            if t_font[attr] != g_font[attr]
+        ]
+        if diffs:
+            lines.append(f"[DIFF] style '{name}':")
+            lines.extend("    " + d for d in diffs)
+
+    extra = set(g_styles) - set(t_styles)
+    for name in sorted(extra):
+        lines.append(f"[EXTRA] style '{name}' exists in target, not in template")
+
+    return lines
+
+
+def audit_direct_formatting(target) -> list[str]:
+    """List runs in the target that carry direct (inline) font overrides."""
+    lines = []
+    for pi, para in enumerate(target.paragraphs):
+        for ri, run in enumerate(para.runs):
+            f = run.font
+            overrides = []
+            if f.name is not None:
+                overrides.append(f"font={f.name}")
+            if f.size is not None:
+                overrides.append(f"size={f.size.pt}")
+            if f.bold is not None:
+                overrides.append(f"bold={f.bold}")
+            if f.italic is not None:
+                overrides.append(f"italic={f.italic}")
+            if overrides:
+                snippet = (run.text or "")[:30].replace("\n", " ")
+                lines.append(
+                    f"  para {pi} run {ri} \"{snippet}\": {', '.join(overrides)}"
+                )
+    return lines
+
+
+# --------------------------------------------------------------------------- #
+# Synchronisation
+# --------------------------------------------------------------------------- #
+
+def _copy_font(src_font, dst_font):
+    """Copy inspectable font attributes from one Font to another."""
+    if src_font.name is not None:
+        dst_font.name = src_font.name
+    if src_font.size is not None:
+        dst_font.size = src_font.size
+    dst_font.bold = src_font.bold
+    dst_font.italic = src_font.italic
+    dst_font.underline = src_font.underline
+    try:
+        if src_font.color and src_font.color.rgb is not None:
+            dst_font.color.rgb = RGBColor(*src_font.color.rgb)
+    except (AttributeError, ValueError):
+        pass
+
+
+def sync_styles(template, target) -> list[str]:
+    """Make matching styles in target adopt the template's font settings.
+
+    Matches by style name. Styles present only in the template are reported
+    but not created (creating styles cleanly is document-specific); in practice
+    syncing the shared styles (Normal, Heading 1...) fixes the vast majority of
+    real documents because content inherits from them.
+    """
+    changed = []
+    g_styles = {s.name: s for s in target.styles}
+    for style in template.styles:
+        src_font = getattr(style, "font", None)
+        if src_font is None or style.name not in g_styles:
+            continue
+        dst = g_styles[style.name]
+        if getattr(dst, "font", None) is None:
+            continue
+        before = _font_dict(dst.font)
+        _copy_font(src_font, dst.font)
+        after = _font_dict(dst.font)
+        if before != after:
+            changed.append(f"synced style '{style.name}'")
+    return changed
+
+
+def clear_direct_formatting(target) -> int:
+    """Remove direct run-level font overrides so style formatting shows through.
+
+    Resets name/size/bold/italic/underline on every run to None (inherit).
+    Run text and the run's paragraph style are left untouched.
+    """
+    count = 0
+    for para in target.paragraphs:
+        for run in para.runs:
+            f = run.font
+            touched = any(v is not None for v in
+                          (f.name, f.size, f.bold, f.italic, f.underline))
+            if touched:
+                f.name = None
+                f.size = None
+                f.bold = None
+                f.italic = None
+                f.underline = None
+                try:
+                    f.color.rgb = None
+                except (AttributeError, ValueError):
+                    pass
+                count += 1
+    return count
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--template", required=True, help="reference .docx")
+    ap.add_argument("--target", required=True, help=".docx to bring into line")
+    ap.add_argument("--out", help="output path (required unless --report only)")
+    ap.add_argument("--report", action="store_true",
+                    help="print formatting differences and exit")
+    ap.add_argument("--sync-styles", action="store_true",
+                    help="copy template style fonts into matching target styles")
+    ap.add_argument("--clear-direct", action="store_true",
+                    help="strip direct run-level font overrides in the target")
+    args = ap.parse_args()
+
+    template = Document(args.template)
+    target = Document(args.target)
+
+    if args.report or not (args.sync_styles or args.clear_direct):
+        print("=== Style differences (template vs target) ===")
+        diffs = audit(template, target)
+        print("\n".join(diffs) if diffs else "  none — styles match")
+        print("\n=== Direct (inline) overrides in target ===")
+        direct = audit_direct_formatting(target)
+        print("\n".join(direct) if direct else "  none")
+        if args.report:
+            return
+
+    if not args.out:
+        ap.error("--out is required when making changes")
+
+    if args.sync_styles:
+        for line in sync_styles(template, target):
+            print(line)
+
+    if args.clear_direct:
+        n = clear_direct_formatting(target)
+        print(f"cleared direct overrides on {n} run(s)")
+
+    target.save(args.out)
+    print(f"\nSaved {args.out} — open in Word and verify before relying on it.")
+
+
+if __name__ == "__main__":
+    main()
+```
